@@ -2,7 +2,19 @@ import os
 import re
 import string
 import sys
+import warnings
+import numpy as np
 import joblib
+
+# Suppress harmless scikit-learn cross-version unpickling warnings
+warnings.filterwarnings("ignore")
+
+# Ensure UTF-8 output on Windows consoles if possible
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 # Paths to trained model and vectorizer
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -43,10 +55,15 @@ def predict(email_text: str, model, vectorizer):
     vector = vectorizer.transform([cleaned])
     prediction = model.predict(vector)[0]
 
-    # Model probability if supported
-    probs = None
-    if hasattr(model, "predict_proba"):
-        probs = model.predict_proba(vector)[0]
+    # Robust probability estimation across scikit-learn versions
+    prob_safe, prob_phishing = None, None
+    try:
+        if hasattr(model, "decision_function"):
+            score = float(model.decision_function(vector)[0])
+            prob_phishing = 1.0 / (1.0 + np.exp(-score))
+            prob_safe = 1.0 - prob_phishing
+    except Exception:
+        pass
 
     # 0 = SAFE, 1 = PHISHING
     is_phishing = bool(prediction == 1)
@@ -56,22 +73,22 @@ def predict(email_text: str, model, vectorizer):
         "label": label,
         "is_phishing": is_phishing,
         "probabilities": {
-            "safe": probs[0] * 100 if probs is not None else None,
-            "phishing": probs[1] * 100 if probs is not None else None,
+            "safe": prob_safe * 100 if prob_safe is not None else None,
+            "phishing": prob_phishing * 100 if prob_phishing is not None else None,
         },
     }
 
 
 def main():
     print("=" * 60)
-    print("      📧 PHISHING EMAIL DETECTION SYSTEM (ML Inference)      ")
+    print("      PHISHING EMAIL DETECTION SYSTEM (ML Inference)      ")
     print("=" * 60)
 
     try:
         model, vectorizer = load_artifacts()
-        print("✓ Model and TF-IDF Vectorizer loaded successfully.\n")
+        print("[+] Model and TF-IDF Vectorizer loaded successfully.\n")
     except Exception as e:
-        print(f"Error loading model artifacts: {e}")
+        print(f"[-] Error loading model artifacts: {e}")
         sys.exit(1)
 
     if len(sys.argv) > 1:
@@ -98,7 +115,11 @@ def main():
                 break
 
             res = predict(user_input, model, vectorizer)
-            badge = "⚠️ PHISHING EMAIL DETECTED" if res["is_phishing"] else "✅ SAFE EMAIL"
+            badge = (
+                "[!] PHISHING EMAIL DETECTED"
+                if res["is_phishing"]
+                else "[*] SAFE EMAIL"
+            )
             print("-" * 50)
             print(f"Result: {badge}")
             if res["probabilities"]["safe"] is not None:
